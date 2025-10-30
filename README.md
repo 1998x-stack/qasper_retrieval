@@ -1,8 +1,9 @@
 # QASPER检索评估系统 / QASPER Retrieval Evaluation System
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1DAhw8wHFQGeuyZk6yxZLXZfGe1rbezDF?usp=sharing)
 
-一个全面的信息检索评估系统，专门用于在QASPER数据集上比较BM25、embedding和混合检索方法。
 
-A comprehensive information retrieval evaluation system specifically designed for comparing BM25, embedding, and hybrid retrieval methods on the QASPER dataset.
+> 一个全面的信息检索评估系统，专门用于在QASPER数据集上比较BM25、embedding和混合检索方法。
+> A comprehensive information retrieval evaluation system specifically designed for comparing BM25, embedding, and hybrid retrieval methods on the QASPER dataset.
 
 ## 📋 目录 / Table of Contents
 
