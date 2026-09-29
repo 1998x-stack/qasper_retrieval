@@ -274,14 +274,31 @@ class QASPERRetrievalSystem:
     def _build_hybrid_index(self) -> None:
         """构建混合索引 / Build Hybrid index"""
         try:
-            # 尝试加载已存在的索引 / Try to load existing index
-            self.hybrid_retriever.load_index()
-            logger.info("混合索引已从缓存加载 / Hybrid index loaded from cache")
-        except FileNotFoundError:
-            # 构建新索引 / Build new index
+            self.hybrid_retriever.load_index(
+                preprocessed_dataset=self.preprocessed_dataset
+            )
+            logger.info(
+                "混合检索器已从验证子缓存加载 / "
+                "Hybrid retriever loaded from validated child caches"
+            )
+        except (
+            CacheNotFoundError,
+            CacheLegacyError,
+            CacheStaleError,
+            CacheIncompleteError,
+            CacheCorruptError,
+        ) as error:
+            logger.warning(
+                f"Hybrid子缓存不可复用，将重新构建: {error} / "
+                f"Hybrid child cache is not reusable; rebuilding: {error}"
+            )
             self.hybrid_retriever.build_index(self.preprocessed_dataset)
-            self.hybrid_retriever.save_index()
-            logger.info("混合索引构建并保存完成 / Hybrid index built and saved")
+            self.hybrid_retriever.save_index(
+                preprocessed_dataset=self.preprocessed_dataset
+            )
+            logger.info(
+                "混合索引构建并保存完成 / Hybrid index built and saved"
+            )
     
     def evaluate_methods(self, methods: List[str] = None,
                         test_split: str = 'validation',
