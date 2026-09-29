@@ -15,7 +15,8 @@ models:
   embedding_dim: 768
   max_seq_length: 512
   batch_size: 32
-  device: "cuda"  # cuda, cpu, auto
+  device: "auto"  # auto, cpu, cuda, cuda:0
+  trust_remote_code: false  # opt-in only for models that require custom remote code
 
 # BM25配置 / BM25 Configuration
 bm25:
