@@ -244,14 +244,32 @@ class QASPERRetrievalSystem:
     def _build_embedding_index(self) -> None:
         """构建Embedding索引 / Build Embedding index"""
         try:
-            # 尝试加载已存在的索引 / Try to load existing index
-            self.embedding_retriever.load_index()
-            logger.info("Embedding索引已从缓存加载 / Embedding index loaded from cache")
-        except FileNotFoundError:
-            # 构建新索引 / Build new index
+            self.embedding_retriever.load_index(
+                preprocessed_dataset=self.preprocessed_dataset
+            )
+            logger.info(
+                "Embedding索引已从验证缓存加载 / "
+                "Embedding index loaded from validated cache"
+            )
+        except (
+            CacheNotFoundError,
+            CacheLegacyError,
+            CacheStaleError,
+            CacheIncompleteError,
+            CacheCorruptError,
+        ) as error:
+            logger.warning(
+                f"Embedding缓存不可复用，将重新构建: {error} / "
+                f"Embedding cache is not reusable; rebuilding: {error}"
+            )
             self.embedding_retriever.build_index(self.preprocessed_dataset)
-            self.embedding_retriever.save_index()
-            logger.info("Embedding索引构建并保存完成 / Embedding index built and saved")
+            self.embedding_retriever.save_index(
+                preprocessed_dataset=self.preprocessed_dataset
+            )
+            logger.info(
+                "Embedding索引构建并保存完成 / "
+                "Embedding index built and saved"
+            )
     
     def _build_hybrid_index(self) -> None:
         """构建混合索引 / Build Hybrid index"""
