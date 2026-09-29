@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from cache.bm25 import bm25_build_config_fingerprint
 from cache.embedding import embedding_build_config_fingerprint
 from cache.errors import CacheCorruptError
-from cache.hybrid import validate_child_alignment
+from cache.hybrid import validate_child_alignment, validate_child_source_identity
 
 
 def test_aligned_hybrid_children_are_valid():
@@ -58,3 +58,21 @@ def test_hybrid_weights_do_not_invalidate_child_build_caches():
     changed = {**base, "hybrid": {"bm25_weight": 0.8, "embedding_weight": 0.2}}
     assert bm25_build_config_fingerprint(base) == bm25_build_config_fingerprint(changed)
     assert embedding_build_config_fingerprint(base) == embedding_build_config_fingerprint(changed)
+
+def test_shared_child_must_match_current_source_identity():
+    with pytest.raises(CacheCorruptError):
+        validate_child_source_identity(
+            expected_passage_ids=[0, 1],
+            expected_document_ids=["p1", "p2"],
+            actual_passage_ids=[0, 2],
+            actual_document_ids=["p1", "p3"],
+        )
+
+
+def test_shared_child_accepts_current_source_identity():
+    validate_child_source_identity(
+        expected_passage_ids=[0, 1],
+        expected_document_ids=["p1", "p2"],
+        actual_passage_ids=[0, 1],
+        actual_document_ids=["p1", "p2"],
+    )
