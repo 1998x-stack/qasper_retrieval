@@ -18,7 +18,8 @@ import faiss
 from transformers import AutoModel, AutoTokenizer, AutoConfig
 from sentence_transformers import SentenceTransformer
 
-from ..utils import get_logger, Timer, MemoryMonitor, ensure_dir, save_pickle, load_pickle, get_device, chunk_list
+from ..utils import get_logger, Timer, MemoryMonitor, ensure_dir, save_pickle, load_pickle, chunk_list
+from .contracts import faiss_raw_score_to_similarity, resolve_device_name
 
 logger = get_logger(__name__)
 
@@ -88,7 +89,17 @@ class EmbeddingRetriever:
         self.embedding_dim = self.model_config.get('embedding_dim', 768)
         self.max_seq_length = self.model_config.get('max_seq_length', 512)
         self.batch_size = self.model_config.get('batch_size', 32)
-        self.device = get_device()
+        self.requested_device = self.model_config.get('device', 'auto')
+        resolved_device = resolve_device_name(
+            self.requested_device, torch.cuda.is_available()
+        )
+        if str(self.requested_device).lower().startswith('cuda') and resolved_device == 'cpu':
+            logger.warning(
+                "CUDA requested but unavailable; falling back to CPU / "
+                "请求CUDA但当前不可用，回退到CPU"
+            )
+        self.device = torch.device(resolved_device)
+        self.trust_remote_code = bool(self.model_config.get('trust_remote_code', False))
         
         # FAISS配置 / FAISS configuration
         self.index_type = self.faiss_config.get('index_type', 'IndexFlatIP')
@@ -130,8 +141,14 @@ class EmbeddingRetriever:
                 logger.info("使用SentenceTransformer模型 / Using SentenceTransformer model")
             else:
                 # 使用AutoModel / Use AutoModel
-                self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-                self.model = AutoModel.from_pretrained(self.model_name, trust_remote_code=True)
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    self.model_name,
+                    trust_remote_code=self.trust_remote_code,
+                )
+                self.model = AutoModel.from_pretrained(
+                    self.model_name,
+                    trust_remote_code=self.trust_remote_code,
+                )
                 self.model.to(self.device)
                 self.model.eval()
                 self.use_sentence_transformer = False
@@ -377,7 +394,8 @@ class EmbeddingRetriever:
             if idx == -1:  # FAISS返回-1表示无效结果 / FAISS returns -1 for invalid results
                 break
                 
-            score = float(score)
+            raw_score = float(score)
+            score = faiss_raw_score_to_similarity(self.index_type, raw_score)
             if score < min_score:
                 break
             
@@ -385,6 +403,7 @@ class EmbeddingRetriever:
             metadata = self.passage_metadata[passage_id].copy()
             metadata['document_id'] = self.document_ids[idx]
             metadata['rank'] = i + 1
+            metadata['raw_faiss_score'] = raw_score
             
             results.append((passage_id, score, metadata))
         
@@ -428,7 +447,8 @@ class EmbeddingRetriever:
                     if idx == -1:
                         break
                         
-                    score = float(score)
+                    raw_score = float(score)
+                    score = faiss_raw_score_to_similarity(self.index_type, raw_score)
                     if score < min_score:
                         break
                     
@@ -436,6 +456,7 @@ class EmbeddingRetriever:
                     metadata = self.passage_metadata[passage_id].copy()
                     metadata['document_id'] = self.document_ids[idx]
                     metadata['rank'] = j + 1
+                    metadata['raw_faiss_score'] = raw_score
                     
                     query_results.append((passage_id, score, metadata))
                 
