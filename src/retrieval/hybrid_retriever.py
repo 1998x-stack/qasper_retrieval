@@ -13,6 +13,8 @@ from collections import defaultdict
 
 from ..utils import get_logger, Timer, normalize_scores, save_json, load_json
 from ..cache.atomic import atomic_write_json
+from ..cache.bm25 import bm25_build_config_fingerprint
+from ..cache.embedding import embedding_build_config_fingerprint
 from ..cache.hybrid import validate_child_alignment, validate_child_source_identity
 from .bm25_retriever import BM25Retriever
 from .embedding_retriever import EmbeddingRetriever
@@ -72,6 +74,25 @@ class HybridRetriever:
         self.uses_shared_retrievers = not (
             self._owns_bm25_retriever and self._owns_embedding_retriever
         )
+
+        if (
+            bm25_retriever is not None
+            and bm25_build_config_fingerprint(bm25_retriever.config)
+            != bm25_build_config_fingerprint(config)
+        ):
+            raise ValueError(
+                "Injected BM25Retriever build configuration is incompatible "
+                "with HybridRetriever configuration"
+            )
+        if (
+            embedding_retriever is not None
+            and embedding_build_config_fingerprint(embedding_retriever.config)
+            != embedding_build_config_fingerprint(config)
+        ):
+            raise ValueError(
+                "Injected EmbeddingRetriever build configuration is incompatible "
+                "with HybridRetriever configuration"
+            )
         
         # 索引状态 / Index status
         self.index_built = False
@@ -455,9 +476,10 @@ class HybridRetriever:
         """Persist owned children or canonical shared child caches."""
         if not self.index_built:
             raise ValueError("没有混合索引可保存 / No hybrid index to save")
-        if preprocessed_dataset is None:
+        if self.uses_shared_retrievers and preprocessed_dataset is None:
             raise ValueError(
-                "preprocessed_dataset is required for lineage-aware hybrid persistence"
+                "preprocessed_dataset is required when HybridRetriever uses "
+                "shared child resources"
             )
 
         if self.uses_shared_retrievers:
@@ -495,16 +517,20 @@ class HybridRetriever:
                 index_dir / "embedding_index",
                 preprocessed_dataset=preprocessed_dataset,
             )
-            atomic_write_json(
-                index_dir / "hybrid_config.json",
-                {
-                    "bm25_weight": self.bm25_weight,
-                    "embedding_weight": self.embedding_weight,
-                    "normalization_method": self.normalization_method,
-                    "index_built": self.index_built,
-                    "snapshot_only": True,
-                },
-            )
+            hybrid_snapshot = {
+                "bm25_weight": self.bm25_weight,
+                "embedding_weight": self.embedding_weight,
+                "normalization_method": self.normalization_method,
+                "index_built": self.index_built,
+                "snapshot_only": preprocessed_dataset is not None,
+            }
+            if preprocessed_dataset is None:
+                save_json(hybrid_snapshot, index_dir / "hybrid_config.json")
+            else:
+                atomic_write_json(
+                    index_dir / "hybrid_config.json",
+                    hybrid_snapshot,
+                )
 
         logger.info("混合索引保存完成 / Hybrid index saved successfully")
         return str(index_dir)
@@ -512,9 +538,10 @@ class HybridRetriever:
     def load_index(self, index_path: Optional[str] = None,
                   preprocessed_dataset: Optional[Dict[str, Any]] = None) -> None:
         """Load owned child caches or reuse/load canonical shared child caches."""
-        if preprocessed_dataset is None:
+        if self.uses_shared_retrievers and preprocessed_dataset is None:
             raise ValueError(
-                "preprocessed_dataset is required for lineage-aware hybrid loading"
+                "preprocessed_dataset is required when HybridRetriever uses "
+                "shared child resources"
             )
 
         if self.uses_shared_retrievers:
@@ -558,8 +585,31 @@ class HybridRetriever:
                     index_dir / "embedding_index",
                     preprocessed_dataset=preprocessed_dataset,
                 )
-                self._validate_children(preprocessed_dataset)
-                self.index_built = True
+                if preprocessed_dataset is not None:
+                    self._validate_children(preprocessed_dataset)
+                    self.index_built = True
+                else:
+                    validate_child_alignment(
+                        bm25_passage_ids=self.bm25_retriever.passage_ids,
+                        embedding_passage_ids=self.embedding_retriever.passage_ids,
+                        bm25_document_ids=self.bm25_retriever.document_ids,
+                        embedding_document_ids=self.embedding_retriever.document_ids,
+                    )
+                    config_path = index_dir / "hybrid_config.json"
+                    if config_path.exists():
+                        hybrid_config = load_json(config_path)
+                        self.bm25_weight = hybrid_config.get(
+                            "bm25_weight", self.bm25_weight
+                        )
+                        self.embedding_weight = hybrid_config.get(
+                            "embedding_weight", self.embedding_weight
+                        )
+                        self.normalization_method = hybrid_config.get(
+                            "normalization_method", self.normalization_method
+                        )
+                        self.index_built = hybrid_config.get("index_built", True)
+                    else:
+                        self.index_built = True
 
         logger.info("混合索引加载完成 / Hybrid index loaded successfully")
         self._log_index_statistics()
