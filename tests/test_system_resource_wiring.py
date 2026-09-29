@@ -49,3 +49,23 @@ def test_hybrid_constructor_exposes_injection_points():
     arg_names = [arg.arg for arg in init.args.args]
     assert "bm25_retriever" in arg_names
     assert "embedding_retriever" in arg_names
+
+
+def test_system_constructs_each_primary_retriever_once():
+    source = (ROOT / "src" / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    init = _class_method(tree, "QASPERRetrievalSystem", "__init__")
+
+    constructor_counts = {"BM25Retriever": 0, "EmbeddingRetriever": 0}
+    for node in ast.walk(init):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in constructor_counts
+        ):
+            constructor_counts[node.func.id] += 1
+
+    assert constructor_counts == {
+        "BM25Retriever": 1,
+        "EmbeddingRetriever": 1,
+    }
