@@ -12,6 +12,8 @@ import numpy as np
 from collections import defaultdict
 
 from ..utils import get_logger, Timer, normalize_scores, save_json, load_json
+from ..cache.atomic import atomic_write_json
+from ..cache.hybrid import validate_child_alignment
 from .bm25_retriever import BM25Retriever
 from .embedding_retriever import EmbeddingRetriever
 
@@ -394,90 +396,106 @@ class HybridRetriever:
         
         return best_weights[0], best_weights[1], best_score
     
-    def save_index(self, index_path: Optional[str] = None) -> str:
-        """
-        保存混合索引
-        Save hybrid index
-        
-        Args:
-            index_path: 索引保存路径 / Index save path
-            
-        Returns:
-            保存路径 / Save path
-        """
+    def save_index(self, index_path: Optional[str] = None,
+                  preprocessed_dataset: Optional[Dict[str, Any]] = None) -> str:
+        """保存混合索引 / Save hybrid index."""
         if not self.index_built:
             raise ValueError("没有混合索引可保存 / No hybrid index to save")
-        
+
         if index_path is None:
             index_dir = self.cache_dir / "hybrid_index"
         else:
             index_dir = Path(index_path)
-        
+
         logger.info(f"保存混合索引到: {index_dir} / Saving hybrid index to: {index_dir}")
-        
+
         with Timer("混合索引保存 / Hybrid index saving"):
-            # 保存BM25索引 / Save BM25 index
-            bm25_path = self.bm25_retriever.save_index(index_dir / "bm25_index.pkl")
-            
-            # 保存embedding索引 / Save embedding index
-            embedding_path = self.embedding_retriever.save_index(index_dir / "embedding_index")
-            
-            # 保存混合检索器配置 / Save hybrid retriever configuration
-            hybrid_config = {
-                'bm25_weight': self.bm25_weight,
-                'embedding_weight': self.embedding_weight,
-                'normalization_method': self.normalization_method,
-                'index_built': self.index_built
+            bm25_path = index_dir / "bm25_index.pkl"
+            embedding_path = index_dir / "embedding_index"
+
+            self.bm25_retriever.save_index(
+                bm25_path,
+                preprocessed_dataset=preprocessed_dataset,
+            )
+            self.embedding_retriever.save_index(
+                embedding_path,
+                preprocessed_dataset=preprocessed_dataset,
+            )
+
+            # This file is an informational snapshot only. Current runtime config
+            # remains authoritative when loading a validated hybrid composition.
+            hybrid_snapshot = {
+                "bm25_weight": self.bm25_weight,
+                "embedding_weight": self.embedding_weight,
+                "normalization_method": self.normalization_method,
+                "index_built": self.index_built,
+                "snapshot_only": preprocessed_dataset is not None,
             }
-            
             config_path = index_dir / "hybrid_config.json"
-            save_json(hybrid_config, config_path)
-        
+            if preprocessed_dataset is None:
+                save_json(hybrid_snapshot, config_path)
+            else:
+                atomic_write_json(config_path, hybrid_snapshot)
+
         logger.info("混合索引保存完成 / Hybrid index saved successfully")
         return str(index_dir)
-    
-    def load_index(self, index_path: Optional[str] = None) -> None:
-        """
-        加载混合索引
-        Load hybrid index
-        
-        Args:
-            index_path: 索引文件路径 / Index file path
-        """
+
+    def load_index(self, index_path: Optional[str] = None,
+                  preprocessed_dataset: Optional[Dict[str, Any]] = None) -> None:
+        """加载混合索引 / Load hybrid index."""
         if index_path is None:
             index_dir = self.cache_dir / "hybrid_index"
         else:
             index_dir = Path(index_path)
-        
-        if not index_dir.exists():
-            raise FileNotFoundError(f"混合索引目录不存在: {index_dir} / "
-                                   f"Hybrid index directory not found: {index_dir}")
-        
+
         logger.info(f"加载混合索引从: {index_dir} / Loading hybrid index from: {index_dir}")
-        
+
         with Timer("混合索引加载 / Hybrid index loading"):
-            # 加载BM25索引 / Load BM25 index
             bm25_path = index_dir / "bm25_index.pkl"
-            self.bm25_retriever.load_index(bm25_path)
-            
-            # 加载embedding索引 / Load embedding index
             embedding_path = index_dir / "embedding_index"
-            self.embedding_retriever.load_index(embedding_path)
-            
-            # 加载混合检索器配置 / Load hybrid retriever configuration
-            config_path = index_dir / "hybrid_config.json"
-            if config_path.exists():
-                hybrid_config = load_json(config_path)
-                self.bm25_weight = hybrid_config.get('bm25_weight', self.bm25_weight)
-                self.embedding_weight = hybrid_config.get('embedding_weight', self.embedding_weight)
-                self.normalization_method = hybrid_config.get('normalization_method', self.normalization_method)
-                self.index_built = hybrid_config.get('index_built', True)
+
+            self.bm25_retriever.load_index(
+                bm25_path,
+                preprocessed_dataset=preprocessed_dataset,
+            )
+            self.embedding_retriever.load_index(
+                embedding_path,
+                preprocessed_dataset=preprocessed_dataset,
+            )
+
+            validate_child_alignment(
+                bm25_passage_ids=self.bm25_retriever.passage_ids,
+                embedding_passage_ids=self.embedding_retriever.passage_ids,
+                bm25_document_ids=self.bm25_retriever.document_ids,
+                embedding_document_ids=self.embedding_retriever.document_ids,
+            )
+
+            if preprocessed_dataset is None:
+                # Legacy compatibility path: historical cache config remains
+                # loadable for callers that have not supplied source lineage.
+                config_path = index_dir / "hybrid_config.json"
+                if config_path.exists():
+                    hybrid_config = load_json(config_path)
+                    self.bm25_weight = hybrid_config.get(
+                        "bm25_weight", self.bm25_weight
+                    )
+                    self.embedding_weight = hybrid_config.get(
+                        "embedding_weight", self.embedding_weight
+                    )
+                    self.normalization_method = hybrid_config.get(
+                        "normalization_method", self.normalization_method
+                    )
+                    self.index_built = hybrid_config.get("index_built", True)
+                else:
+                    self.index_built = True
             else:
+                # Validated children are derived state; fusion policy always comes
+                # from the current config and therefore needs no rebuild.
                 self.index_built = True
-        
+
         logger.info("混合索引加载完成 / Hybrid index loaded successfully")
         self._log_index_statistics()
-    
+
     def get_passage_by_id(self, passage_id: int) -> Optional[Dict[str, Any]]:
         """
         根据ID获取段落信息
