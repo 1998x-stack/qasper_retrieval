@@ -34,7 +34,7 @@ def fingerprint_records(records: Iterable[Any]) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
-def hash_file(path: Union[str, Path], chunk_size: int = 1024 * 1024) -> str:    """Return a namespaced SHA-256 digest for a file without loading it all."""
+def hash_file(path: Union[str, Path], chunk_size: int = 1024 * 1024) -> str:\n    """Return a namespaced SHA-256 digest for a file without loading it all."""
     file_path = Path(path)
     if not file_path.is_file():
         raise FileNotFoundError(str(file_path))
