@@ -3,7 +3,7 @@
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Iterable, Union
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -23,8 +23,18 @@ def fingerprint_value(value: Any) -> str:
     return f"sha256:{digest}"
 
 
-def hash_file(path: Union[str, Path], chunk_size: int = 1024 * 1024) -> str:
-    """Return a namespaced SHA-256 digest for a file without loading it all."""
+def fingerprint_records(records: Iterable[Any]) -> str:
+    """Hash an ordered stream of JSON-compatible records without buffering it all."""
+    digest = hashlib.sha256()
+    digest.update(b"qasper-cache-records-v1\0")
+    for record in records:
+        payload = canonical_json_bytes(record)
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def hash_file(path: Union[str, Path], chunk_size: int = 1024 * 1024) -> str:    """Return a namespaced SHA-256 digest for a file without loading it all."""
     file_path = Path(path)
     if not file_path.is_file():
         raise FileNotFoundError(str(file_path))
