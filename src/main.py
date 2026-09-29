@@ -24,6 +24,7 @@ from src.utils import (
 from src.data import QASPERDatasetLoader, QASPERPreprocessor
 from src.retrieval import BM25Retriever, EmbeddingRetriever, HybridRetriever
 from src.evaluation import RetrievalEvaluator
+from src.evaluation.ground_truth import prepare_evaluation_data
 
 # 设置日志 / Setup logging
 setup_logging()
@@ -282,65 +283,45 @@ class QASPERRetrievalSystem:
             'comparison_results': comparison_results if len(evaluation_results) > 1 else None
         }
     
-    def _prepare_evaluation_data(self, test_split: str, 
+    def _prepare_evaluation_data(self, test_split: str,
                                max_queries: Optional[int]) -> Dict[str, Any]:
-        """
-        准备评估数据
-        Prepare evaluation data
-        
-        Args:
-            test_split: 测试数据分割 / Test data split
-            max_queries: 最大查询数量 / Maximum number of queries
-            
-        Returns:
-            评估数据 / Evaluation data
-        """
-        logger.info(f"准备评估数据，分割: {test_split} / Preparing evaluation data, split: {test_split}")
-        
-        # 获取测试数据 / Get test data
-        if test_split not in self.processed_dataset:
-            raise ValueError(f"测试分割'{test_split}'不存在 / Test split '{test_split}' does not exist")
-        
-        test_documents = self.processed_dataset[test_split]
-        
-        # 提取查询和真实答案 / Extract queries and ground truth
-        queries = []
-        ground_truth = []
-        passage_texts = {}
-        
-        query_count = 0
-        for doc in test_documents:
-            # 构建段落文本字典 / Build passage texts dictionary
-            for passage in doc['passages']:
-                passage_id = len(passage_texts)
-                passage_texts[passage_id] = passage['text']
-            
-            # 提取问答对 / Extract QA pairs
-            for qa_pair in doc['qa_pairs']:
-                if max_queries and query_count >= max_queries:
-                    break
-                
-                question = qa_pair['question']
-                queries.append(question)
-                
-                # 简化处理：使用所有段落作为潜在相关段落 / Simplified: use all passages as potentially relevant
-                # 在实际应用中，这里应该有更精确的相关性标注 / In practice, more precise relevance annotations should be used
-                relevant_passage_ids = list(range(len(doc['passages'])))
-                ground_truth.append(relevant_passage_ids)
-                
-                query_count += 1
-            
-            if max_queries and query_count >= max_queries:
-                break
-        
-        logger.info(f"准备了{len(queries)}个查询用于评估 / Prepared {len(queries)} queries for evaluation")
-        
-        return {
-            'queries': queries,
-            'ground_truth': ground_truth,
-            'passage_texts': passage_texts
-        }
-    
+        """Prepare evidence-grounded QASPER retrieval evaluation data."""
+        if self.processed_dataset is None or self.preprocessed_dataset is None:
+            raise ValueError(
+                "Processed and preprocessed datasets must be loaded before evaluation"
+            )
+
+        logger.info(
+            f"准备评估数据，分割: {test_split} / "
+            f"Preparing evidence-grounded evaluation data, split: {test_split}"
+        )
+
+        eval_data = prepare_evaluation_data(
+            processed_dataset=self.processed_dataset,
+            preprocessed_dataset=self.preprocessed_dataset,
+            test_split=test_split,
+            max_queries=max_queries,
+        )
+
+        logger.info(
+            f"准备了{len(eval_data['queries'])}个有文本证据标注的查询 / "
+            f"Prepared {len(eval_data['queries'])} queries with textual evidence labels"
+        )
+        logger.info(
+            f"跳过无文本段落证据查询: {eval_data['skipped_no_text_evidence']}; "
+            f"证据未匹配查询: {eval_data['skipped_unmatched_evidence']} / "
+            f"Skipped without textual paragraph evidence: "
+            f"{eval_data['skipped_no_text_evidence']}; unmatched evidence: "
+            f"{eval_data['skipped_unmatched_evidence']}"
+        )
+
+        if not eval_data["queries"]:
+            raise ValueError(
+                f"No evaluable textual-evidence queries found in split {test_split!r}"
+            )
+
+        return eval_data
+
     def _evaluate_bm25(self, eval_data: Dict[str, Any]) -> Dict[str, Any]:
         """评估BM25方法 / Evaluate BM25 method"""
         queries = eval_data['queries']

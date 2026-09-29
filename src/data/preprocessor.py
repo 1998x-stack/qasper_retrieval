@@ -20,6 +20,7 @@ import spacy
 from transformers import AutoTokenizer
 
 from ..utils import get_logger, Timer, ensure_dir, save_json, load_json
+from .cache_compat import restore_preprocessed_cache_keys
 
 logger = get_logger(__name__)
 
@@ -598,7 +599,7 @@ class QASPERPreprocessor:
         logger.info(f"加载预处理数据从: {input_path} / Loading preprocessed data from: {input_path}")
         
         with Timer("预处理数据加载 / Preprocessed data loading"):
-            preprocessed_dataset = load_json(input_path)
+            preprocessed_dataset = restore_preprocessed_cache_keys(load_json(input_path))
         
         logger.info("预处理数据加载完成 / Preprocessed data loaded successfully")
         return preprocessed_dataset

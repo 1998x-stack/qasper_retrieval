@@ -20,6 +20,7 @@ from rouge_score import rouge_scorer
 import pandas as pd
 
 from ..utils import get_logger, Timer, ensure_dir, save_json, load_json, save_pickle, load_pickle
+from .retrieval_metrics import average_precision_at_k
 
 logger = get_logger(__name__)
 
@@ -394,37 +395,11 @@ class RetrievalEvaluator:
         
         return metrics
     
-    def _calculate_average_precision(self, retrieved_ids: List[int], 
+    def _calculate_average_precision(self, retrieved_ids: List[int],
                                    relevant_ids: set, k: int) -> float:
-        """
-        计算平均精确率
-        Calculate Average Precision
-        
-        Args:
-            retrieved_ids: 检索到的ID列表 / Retrieved ID list
-            relevant_ids: 相关ID集合 / Relevant ID set
-            k: top-k值 / top-k value
-            
-        Returns:
-            平均精确率 / Average precision
-        """
-        if not relevant_ids:
-            return 0.0
-        
-        precisions = []
-        num_relevant = 0
-        
-        for i, doc_id in enumerate(retrieved_ids[:k]):
-            if doc_id in relevant_ids:
-                num_relevant += 1
-                precision_at_i = num_relevant / (i + 1)
-                precisions.append(precision_at_i)
-        
-        if precisions:
-            return np.mean(precisions)
-        else:
-            return 0.0
-    
+        """Calculate AP@K using the standard relevant-document denominator."""
+        return average_precision_at_k(retrieved_ids, relevant_ids, k)
+
     def _calculate_text_metrics(self, 
                               queries: List[str],
                               retrieval_results: List[List[Tuple[int, float, Dict[str, Any]]]],

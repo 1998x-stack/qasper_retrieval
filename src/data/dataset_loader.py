@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
 from ..utils import get_logger, Timer, MemoryMonitor, ensure_dir, save_json, load_json
+from .qasper_schema import normalize_answer_payloads
 
 logger = get_logger(__name__)
 
@@ -312,17 +313,17 @@ class QASPERDatasetLoader:
             answers = answers_list[i] if i < len(answers_list) else []
             
             # 处理答案 / Process answers
+            # Hugging Face datasets<4 may decode Sequence<dict> as dict-of-lists.
             processed_answers = []
-            for answer_data in answers:
-                if isinstance(answer_data, dict):
-                    processed_answer = {
-                        'answer_text': answer_data.get('answer', {}).get('free_form_answer', ''),
-                        'evidence': answer_data.get('answer', {}).get('evidence', []),
-                        'extractive_spans': answer_data.get('answer', {}).get('extractive_spans', []),
-                        'yes_no': answer_data.get('answer', {}).get('yes_no', None),
-                        'unanswerable': answer_data.get('answer', {}).get('unanswerable', False)
-                    }
-                    processed_answers.append(processed_answer)
+            for answer_payload in normalize_answer_payloads(answers):
+                processed_answer = {
+                    'answer_text': answer_payload.get('free_form_answer', ''),
+                    'evidence': answer_payload.get('evidence', []),
+                    'extractive_spans': answer_payload.get('extractive_spans', []),
+                    'yes_no': answer_payload.get('yes_no', None),
+                    'unanswerable': answer_payload.get('unanswerable', False)
+                }
+                processed_answers.append(processed_answer)
             
             qa_pairs.append({
                 'question_id': question_id,
