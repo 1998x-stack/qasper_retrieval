@@ -598,6 +598,16 @@ class EmbeddingRetriever:
                 logger.warning(f"模型名称不匹配: 当前{self.model_name}, 索引{config['model_name']} / "
                               f"Model name mismatch: current {self.model_name}, index {config['model_name']}")
             
+            cached_index_type = config.get('index_type', self.index_type)
+            if cached_index_type != self.index_type:
+                logger.warning(
+                    f"索引类型与当前配置不一致，将按缓存实际类型解释分数: "
+                    f"当前{self.index_type}, 缓存{cached_index_type} / "
+                    f"Index type differs from current config; score semantics will "
+                    f"follow cached index: current={self.index_type}, cached={cached_index_type}"
+                )
+            self.index_type = cached_index_type
+            
             # 恢复统计信息 / Restore statistics
             stats = metadata['statistics']
             self.total_docs = stats['total_docs']
