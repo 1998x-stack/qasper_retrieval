@@ -220,13 +220,25 @@ class QASPERRetrievalSystem:
     def _build_bm25_index(self) -> None:
         """构建BM25索引 / Build BM25 index"""
         try:
-            # 尝试加载已存在的索引 / Try to load existing index
-            self.bm25_retriever.load_index()
-            logger.info("BM25索引已从缓存加载 / BM25 index loaded from cache")
-        except FileNotFoundError:
-            # 构建新索引 / Build new index
+            self.bm25_retriever.load_index(
+                preprocessed_dataset=self.preprocessed_dataset
+            )
+            logger.info("BM25索引已从验证缓存加载 / BM25 index loaded from validated cache")
+        except (
+            CacheNotFoundError,
+            CacheLegacyError,
+            CacheStaleError,
+            CacheIncompleteError,
+            CacheCorruptError,
+        ) as error:
+            logger.warning(
+                f"BM25缓存不可复用，将重新构建: {error} / "
+                f"BM25 cache is not reusable; rebuilding: {error}"
+            )
             self.bm25_retriever.build_index(self.preprocessed_dataset)
-            self.bm25_retriever.save_index()
+            self.bm25_retriever.save_index(
+                preprocessed_dataset=self.preprocessed_dataset
+            )
             logger.info("BM25索引构建并保存完成 / BM25 index built and saved")
     
     def _build_embedding_index(self) -> None:
