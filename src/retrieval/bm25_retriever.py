@@ -16,6 +16,7 @@ from rank_bm25 import BM25Okapi, BM25L, BM25Plus
 
 from ..utils import get_logger, Timer, ensure_dir, save_pickle, load_pickle
 from ..data import TextPreprocessor
+from .contracts import document_frequency
 
 logger = get_logger(__name__)
 
@@ -270,7 +271,7 @@ class BM25Retriever:
             return 0
         
         token = term_tokens[0]  # 取第一个token
-        return self.bm25_model.doc_freqs.get(token, 0)
+        return document_frequency(self.bm25_model.doc_freqs, token)
     
     def get_term_scores(self, query: str) -> Dict[str, List[float]]:
         """
@@ -443,11 +444,11 @@ class BM25Retriever:
         }
         
         for token in set(query_tokens):
-            df = self.bm25_model.doc_freqs.get(token, 0)
+            df = document_frequency(self.bm25_model.doc_freqs, token)
             analysis['token_coverage'][token] = {
                 'document_frequency': df,
                 'coverage_ratio': df / self.total_docs if self.total_docs > 0 else 0.0,
-                'in_vocabulary': token in self.bm25_model.doc_freqs
+                'in_vocabulary': token in self.bm25_model.idf
             }
             
             if df > 0:

@@ -197,7 +197,8 @@ dataset:
 models:
   embedding_model: "moka-ai/m3e-base"
   batch_size: 32
-  device: "cuda"  # cuda, cpu, auto
+  device: "auto"  # auto, cpu, cuda, cuda:0
+  trust_remote_code: false  # 仅在明确需要远程自定义代码时启用
 
 # BM25配置
 bm25:

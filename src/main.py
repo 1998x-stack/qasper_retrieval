@@ -25,6 +25,7 @@ from src.data import QASPERDatasetLoader, QASPERPreprocessor
 from src.retrieval import BM25Retriever, EmbeddingRetriever, HybridRetriever
 from src.evaluation import RetrievalEvaluator
 from src.evaluation.ground_truth import prepare_evaluation_data
+from src.evaluation.failures import raise_for_method_failures
 
 # 设置日志 / Setup logging
 setup_logging()
@@ -243,6 +244,7 @@ class QASPERRetrievalSystem:
         eval_data = self._prepare_evaluation_data(test_split, max_queries)
         
         evaluation_results = []
+        method_failures = {}
         
         with Timer("检索方法评估 / Retrieval methods evaluation"):
             for method in methods:
@@ -256,8 +258,9 @@ class QASPERRetrievalSystem:
                     elif method == 'hybrid':
                         result = self._evaluate_hybrid(eval_data)
                     else:
-                        logger.warning(f"未知的评估方法: {method} / Unknown evaluation method: {method}")
-                        continue
+                        raise ValueError(
+                            f"未知的评估方法: {method} / Unknown evaluation method: {method}"
+                        )
                     
                     evaluation_results.append(result)
                     
@@ -268,8 +271,15 @@ class QASPERRetrievalSystem:
                     self.evaluator.save_evaluation_results(result)
                     
                 except Exception as e:
-                    logger.error(f"{method}方法评估失败: {e} / {method} method evaluation failed: {e}")
+                    method_failures[method] = e
+                    logger.exception(
+                        f"{method}方法评估失败: {e} / {method} method evaluation failed: {e}"
+                    )
                     continue
+        
+        # 所有请求方法都尝试完成后，任何失败都显式终止流水线。
+        # Fail explicitly after attempting all requested methods.
+        raise_for_method_failures(method_failures)
         
         # 比较所有方法 / Compare all methods
         if len(evaluation_results) > 1:
