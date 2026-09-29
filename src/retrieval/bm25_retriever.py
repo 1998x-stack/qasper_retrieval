@@ -16,6 +16,8 @@ from rank_bm25 import BM25Okapi, BM25L, BM25Plus
 
 from ..utils import get_logger, Timer, ensure_dir, save_pickle, load_pickle
 from ..data import TextPreprocessor
+from ..cache.bm25 import load_bm25_cache, save_bm25_cache
+from ..cache.errors import CacheCorruptError
 from .contracts import document_frequency
 
 logger = get_logger(__name__)
@@ -309,99 +311,135 @@ class BM25Retriever:
         
         return term_scores
     
-    def save_index(self, index_path: Optional[str] = None) -> str:
-        """
-        保存BM25索引
-        Save BM25 index
-        
-        Args:
-            index_path: 索引保存路径 / Index save path
-            
-        Returns:
-            保存路径 / Save path
-        """
+    def save_index(self, index_path: Optional[str] = None,
+                  preprocessed_dataset: Optional[Dict[str, Any]] = None) -> str:
+        """保存BM25索引 / Save BM25 index."""
         if self.bm25_model is None:
             raise ValueError("没有BM25索引可保存 / No BM25 index to save")
-        
+
         if index_path is None:
             index_path = self.cache_dir / "bm25_index.pkl"
         else:
             index_path = Path(index_path)
-        
+
         ensure_dir(index_path.parent)
-        
         logger.info(f"保存BM25索引到: {index_path} / Saving BM25 index to: {index_path}")
-        
+
         index_data = {
-            'bm25_model': self.bm25_model,
-            'corpus': self.corpus,
-            'passage_ids': self.passage_ids,
-            'document_ids': self.document_ids,
-            'passage_metadata': self.passage_metadata,
-            'config': {
-                'k1': self.k1,
-                'b': self.b,
-                'epsilon': self.epsilon,
-                'tokenizer_type': self.tokenizer_type
+            "bm25_model": self.bm25_model,
+            "corpus": self.corpus,
+            "passage_ids": self.passage_ids,
+            "document_ids": self.document_ids,
+            "passage_metadata": self.passage_metadata,
+            "config": {
+                "k1": self.k1,
+                "b": self.b,
+                "epsilon": self.epsilon,
+                "tokenizer_type": self.tokenizer_type,
             },
-            'statistics': {
-                'vocab_size': self.vocab_size,
-                'avg_doc_length': self.avg_doc_length,
-                'total_docs': self.total_docs
-            }
+            "statistics": {
+                "vocab_size": self.vocab_size,
+                "avg_doc_length": self.avg_doc_length,
+                "total_docs": self.total_docs,
+            },
         }
-        
+
         with Timer("BM25索引保存 / BM25 index saving"):
-            save_pickle(index_data, index_path)
-        
+            if preprocessed_dataset is None:
+                # Transitional legacy path used by HybridRetriever until migrated.
+                save_pickle(index_data, index_path)
+            else:
+                save_bm25_cache(
+                    index_data,
+                    index_path=index_path,
+                    preprocessed_dataset=preprocessed_dataset,
+                    config=self.config,
+                )
+
         logger.info("BM25索引保存完成 / BM25 index saved successfully")
         return str(index_path)
-    
-    def load_index(self, index_path: Optional[str] = None) -> None:
-        """
-        加载BM25索引
-        Load BM25 index
-        
-        Args:
-            index_path: 索引文件路径 / Index file path
-        """
+
+    def load_index(self, index_path: Optional[str] = None,
+                  preprocessed_dataset: Optional[Dict[str, Any]] = None) -> None:
+        """加载BM25索引 / Load BM25 index."""
         if index_path is None:
             index_path = self.cache_dir / "bm25_index.pkl"
         else:
             index_path = Path(index_path)
-        
-        if not index_path.exists():
-            raise FileNotFoundError(f"BM25索引文件不存在: {index_path} / "
-                                   f"BM25 index file not found: {index_path}")
-        
+
         logger.info(f"加载BM25索引从: {index_path} / Loading BM25 index from: {index_path}")
-        
+
         with Timer("BM25索引加载 / BM25 index loading"):
-            index_data = load_pickle(index_path)
-        
-        # 恢复索引数据 / Restore index data
-        self.bm25_model = index_data['bm25_model']
-        self.corpus = index_data['corpus']
-        self.passage_ids = index_data['passage_ids']
-        self.document_ids = index_data['document_ids']
-        self.passage_metadata = index_data['passage_metadata']
-        
-        # 恢复配置 / Restore configuration
-        config = index_data['config']
-        self.k1 = config['k1']
-        self.b = config['b']
-        self.epsilon = config['epsilon']
-        self.tokenizer_type = config['tokenizer_type']
-        
-        # 恢复统计信息 / Restore statistics
-        stats = index_data['statistics']
-        self.vocab_size = stats['vocab_size']
-        self.avg_doc_length = stats['avg_doc_length']
-        self.total_docs = stats['total_docs']
-        
+            if preprocessed_dataset is None:
+                # Transitional legacy path for HybridRetriever.
+                if not index_path.exists():
+                    raise FileNotFoundError(
+                        f"BM25索引文件不存在: {index_path} / "
+                        f"BM25 index file not found: {index_path}"
+                    )
+                index_data = load_pickle(index_path)
+                validated_cache = False
+            else:
+                index_data = load_bm25_cache(
+                    index_path=index_path,
+                    preprocessed_dataset=preprocessed_dataset,
+                    config=self.config,
+                )
+                validated_cache = True
+
+        self.bm25_model = index_data["bm25_model"]
+        self.corpus = index_data["corpus"]
+        self.passage_ids = index_data["passage_ids"]
+        self.document_ids = index_data["document_ids"]
+        self.passage_metadata = index_data["passage_metadata"]
+
+        # Validated cache must never override current user configuration.
+        if not validated_cache:
+            cached_config = index_data["config"]
+            self.k1 = cached_config["k1"]
+            self.b = cached_config["b"]
+            self.epsilon = cached_config["epsilon"]
+            self.tokenizer_type = cached_config["tokenizer_type"]
+
+        stats = index_data["statistics"]
+        self.vocab_size = stats["vocab_size"]
+        self.avg_doc_length = stats["avg_doc_length"]
+        self.total_docs = stats["total_docs"]
+        self._validate_loaded_index()
+
         logger.info("BM25索引加载完成 / BM25 index loaded successfully")
         self._log_index_statistics()
-    
+
+    def _validate_loaded_index(self) -> None:
+        """Validate cross-field invariants after deserialization."""
+        counts = {
+            len(self.corpus),
+            len(self.passage_ids),
+            len(self.document_ids),
+            self.total_docs,
+        }
+        if len(counts) != 1:
+            raise CacheCorruptError(
+                "BM25 cache count invariant failed: corpus, passage_ids, "
+                "document_ids, and total_docs differ"
+            )
+
+        missing_metadata = [
+            passage_id
+            for passage_id in self.passage_ids
+            if passage_id not in self.passage_metadata
+        ]
+        if missing_metadata:
+            raise CacheCorruptError(
+                f"BM25 cache metadata missing passage IDs: {missing_metadata[:5]}"
+            )
+
+        corpus_size = getattr(self.bm25_model, "corpus_size", None)
+        if corpus_size is not None and corpus_size != self.total_docs:
+            raise CacheCorruptError(
+                f"BM25 model corpus size {corpus_size} != total_docs {self.total_docs}"
+            )
+
     def get_passage_by_id(self, passage_id: int) -> Optional[Dict[str, Any]]:
         """
         根据ID获取段落信息

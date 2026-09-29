@@ -19,7 +19,8 @@ from nltk.stem import PorterStemmer, WordNetLemmatizer
 import spacy
 from transformers import AutoTokenizer
 
-from ..utils import get_logger, Timer, ensure_dir, save_json, load_json
+from ..utils import get_logger, Timer
+from ..cache.preprocessed import load_preprocessed_cache, save_preprocessed_cache
 from .cache_compat import restore_preprocessed_cache_keys
 
 logger = get_logger(__name__)
@@ -550,7 +551,8 @@ class QASPERPreprocessor:
         
         return stats
     
-    def save_preprocessed_data(self, preprocessed_dataset: Dict[str, Any], 
+    def save_preprocessed_data(self, preprocessed_dataset: Dict[str, Any],
+                              processed_dataset: Dict[str, List[Dict[str, Any]]],
                               output_path: Optional[str] = None) -> str:
         """
         保存预处理后的数据
@@ -558,6 +560,7 @@ class QASPERPreprocessor:
         
         Args:
             preprocessed_dataset: 预处理后的数据集 / Preprocessed dataset
+            processed_dataset: 生成该缓存的处理后数据 / Processed source dataset
             output_path: 输出路径 / Output path
             
         Returns:
@@ -571,17 +574,25 @@ class QASPERPreprocessor:
         logger.info(f"保存预处理数据到: {output_path} / Saving preprocessed data to: {output_path}")
         
         with Timer("预处理数据保存 / Preprocessed data saving"):
-            save_json(preprocessed_dataset, output_path)
+            save_preprocessed_cache(
+                preprocessed_dataset,
+                cache_path=output_path,
+                processed_dataset=processed_dataset,
+                config=self.config,
+            )
         
         logger.info("预处理数据保存完成 / Preprocessed data saved successfully")
         return str(output_path)
     
-    def load_preprocessed_data(self, input_path: Optional[str] = None) -> Dict[str, Any]:
+    def load_preprocessed_data(self,
+                               processed_dataset: Dict[str, List[Dict[str, Any]]],
+                               input_path: Optional[str] = None) -> Dict[str, Any]:
         """
         加载预处理后的数据
         Load preprocessed data
         
         Args:
+            processed_dataset: 当前处理后数据 / Current processed source dataset
             input_path: 输入路径 / Input path
             
         Returns:
@@ -592,14 +603,16 @@ class QASPERPreprocessor:
         else:
             input_path = Path(input_path)
         
-        if not input_path.exists():
-            raise FileNotFoundError(f"预处理数据文件不存在: {input_path} / "
-                                   f"Preprocessed data file not found: {input_path}")
-        
         logger.info(f"加载预处理数据从: {input_path} / Loading preprocessed data from: {input_path}")
         
         with Timer("预处理数据加载 / Preprocessed data loading"):
-            preprocessed_dataset = restore_preprocessed_cache_keys(load_json(input_path))
+            preprocessed_dataset = restore_preprocessed_cache_keys(
+                load_preprocessed_cache(
+                    cache_path=input_path,
+                    processed_dataset=processed_dataset,
+                    config=self.config,
+                )
+            )
         
         logger.info("预处理数据加载完成 / Preprocessed data loaded successfully")
         return preprocessed_dataset

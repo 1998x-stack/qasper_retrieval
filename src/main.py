@@ -26,6 +26,13 @@ from src.retrieval import BM25Retriever, EmbeddingRetriever, HybridRetriever
 from src.evaluation import RetrievalEvaluator
 from src.evaluation.ground_truth import prepare_evaluation_data
 from src.evaluation.failures import raise_for_method_failures
+from src.cache.errors import (
+    CacheCorruptError,
+    CacheIncompleteError,
+    CacheLegacyError,
+    CacheNotFoundError,
+    CacheStaleError,
+)
 
 # 设置日志 / Setup logging
 setup_logging()
@@ -133,12 +140,41 @@ class QASPERRetrievalSystem:
             logger.info("步骤3: 预处理文本数据 / Step 3: Preprocess text data")
             
             preprocessed_data_path = self.preprocessor.cache_dir / "preprocessed_dataset.json"
-            if preprocessed_data_path.exists() and not force_preprocess:
-                logger.info("发现已预处理的数据，正在加载 / Found preprocessed data, loading...")
-                self.preprocessed_dataset = self.preprocessor.load_preprocessed_data()
+            if not force_preprocess:
+                try:
+                    logger.info(
+                        "尝试加载并验证预处理缓存 / "
+                        "Trying to load and validate preprocessed cache"
+                    )
+                    self.preprocessed_dataset = self.preprocessor.load_preprocessed_data(
+                        self.processed_dataset
+                    )
+                except (
+                    CacheNotFoundError,
+                    CacheLegacyError,
+                    CacheStaleError,
+                    CacheIncompleteError,
+                    CacheCorruptError,
+                ) as error:
+                    logger.warning(
+                        f"预处理缓存不可复用，将重新构建: {error} / "
+                        f"Preprocessed cache is not reusable; rebuilding: {error}"
+                    )
+                    self.preprocessed_dataset = self.preprocessor.preprocess_dataset(
+                        self.processed_dataset
+                    )
+                    self.preprocessor.save_preprocessed_data(
+                        self.preprocessed_dataset,
+                        self.processed_dataset,
+                    )
             else:
-                self.preprocessed_dataset = self.preprocessor.preprocess_dataset(self.processed_dataset)
-                self.preprocessor.save_preprocessed_data(self.preprocessed_dataset)
+                self.preprocessed_dataset = self.preprocessor.preprocess_dataset(
+                    self.processed_dataset
+                )
+                self.preprocessor.save_preprocessed_data(
+                    self.preprocessed_dataset,
+                    self.processed_dataset,
+                )
             
             # 打印统计信息 / Print statistics
             self.dataset_loader.print_statistics()
@@ -184,38 +220,85 @@ class QASPERRetrievalSystem:
     def _build_bm25_index(self) -> None:
         """构建BM25索引 / Build BM25 index"""
         try:
-            # 尝试加载已存在的索引 / Try to load existing index
-            self.bm25_retriever.load_index()
-            logger.info("BM25索引已从缓存加载 / BM25 index loaded from cache")
-        except FileNotFoundError:
-            # 构建新索引 / Build new index
+            self.bm25_retriever.load_index(
+                preprocessed_dataset=self.preprocessed_dataset
+            )
+            logger.info("BM25索引已从验证缓存加载 / BM25 index loaded from validated cache")
+        except (
+            CacheNotFoundError,
+            CacheLegacyError,
+            CacheStaleError,
+            CacheIncompleteError,
+            CacheCorruptError,
+        ) as error:
+            logger.warning(
+                f"BM25缓存不可复用，将重新构建: {error} / "
+                f"BM25 cache is not reusable; rebuilding: {error}"
+            )
             self.bm25_retriever.build_index(self.preprocessed_dataset)
-            self.bm25_retriever.save_index()
+            self.bm25_retriever.save_index(
+                preprocessed_dataset=self.preprocessed_dataset
+            )
             logger.info("BM25索引构建并保存完成 / BM25 index built and saved")
     
     def _build_embedding_index(self) -> None:
         """构建Embedding索引 / Build Embedding index"""
         try:
-            # 尝试加载已存在的索引 / Try to load existing index
-            self.embedding_retriever.load_index()
-            logger.info("Embedding索引已从缓存加载 / Embedding index loaded from cache")
-        except FileNotFoundError:
-            # 构建新索引 / Build new index
+            self.embedding_retriever.load_index(
+                preprocessed_dataset=self.preprocessed_dataset
+            )
+            logger.info(
+                "Embedding索引已从验证缓存加载 / "
+                "Embedding index loaded from validated cache"
+            )
+        except (
+            CacheNotFoundError,
+            CacheLegacyError,
+            CacheStaleError,
+            CacheIncompleteError,
+            CacheCorruptError,
+        ) as error:
+            logger.warning(
+                f"Embedding缓存不可复用，将重新构建: {error} / "
+                f"Embedding cache is not reusable; rebuilding: {error}"
+            )
             self.embedding_retriever.build_index(self.preprocessed_dataset)
-            self.embedding_retriever.save_index()
-            logger.info("Embedding索引构建并保存完成 / Embedding index built and saved")
+            self.embedding_retriever.save_index(
+                preprocessed_dataset=self.preprocessed_dataset
+            )
+            logger.info(
+                "Embedding索引构建并保存完成 / "
+                "Embedding index built and saved"
+            )
     
     def _build_hybrid_index(self) -> None:
         """构建混合索引 / Build Hybrid index"""
         try:
-            # 尝试加载已存在的索引 / Try to load existing index
-            self.hybrid_retriever.load_index()
-            logger.info("混合索引已从缓存加载 / Hybrid index loaded from cache")
-        except FileNotFoundError:
-            # 构建新索引 / Build new index
+            self.hybrid_retriever.load_index(
+                preprocessed_dataset=self.preprocessed_dataset
+            )
+            logger.info(
+                "混合检索器已从验证子缓存加载 / "
+                "Hybrid retriever loaded from validated child caches"
+            )
+        except (
+            CacheNotFoundError,
+            CacheLegacyError,
+            CacheStaleError,
+            CacheIncompleteError,
+            CacheCorruptError,
+        ) as error:
+            logger.warning(
+                f"Hybrid子缓存不可复用，将重新构建: {error} / "
+                f"Hybrid child cache is not reusable; rebuilding: {error}"
+            )
             self.hybrid_retriever.build_index(self.preprocessed_dataset)
-            self.hybrid_retriever.save_index()
-            logger.info("混合索引构建并保存完成 / Hybrid index built and saved")
+            self.hybrid_retriever.save_index(
+                preprocessed_dataset=self.preprocessed_dataset
+            )
+            logger.info(
+                "混合索引构建并保存完成 / Hybrid index built and saved"
+            )
     
     def evaluate_methods(self, methods: List[str] = None,
                         test_split: str = 'validation',
