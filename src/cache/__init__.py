@@ -9,7 +9,7 @@ from .errors import (
     CacheNotFoundError,
     CacheStaleError,
 )
-from .fingerprint import fingerprint_value, hash_file
+from .fingerprint import fingerprint_records, fingerprint_value, hash_file
 from .manifest import (
     MANIFEST_SCHEMA_VERSION,
     build_manifest,
@@ -25,6 +25,7 @@ __all__ = [
     "CacheIncompleteError",
     "CacheCorruptError",
     "CacheCompatibilityError",
+    "fingerprint_records",
     "fingerprint_value",
     "hash_file",
     "MANIFEST_SCHEMA_VERSION",
