@@ -19,6 +19,13 @@ from transformers import AutoModel, AutoTokenizer, AutoConfig
 from sentence_transformers import SentenceTransformer
 
 from ..utils import get_logger, Timer, MemoryMonitor, ensure_dir, save_pickle, load_pickle, chunk_list
+from ..cache.atomic import atomic_write_with
+from ..cache.embedding import (
+    commit_embedding_manifest,
+    embedding_backend,
+    validate_embedding_cache,
+)
+from ..cache.errors import CacheCorruptError
 from .contracts import faiss_raw_score_to_similarity, resolve_device_name
 
 logger = get_logger(__name__)
@@ -135,8 +142,9 @@ class EmbeddingRetriever:
         
         try:
             # 尝试使用SentenceTransformer / Try using SentenceTransformer
-            if 'sentence-transformers' in self.model_name or 'm3e' in self.model_name:
+            if embedding_backend(self.model_name) == "sentence_transformer":
                 self.model = SentenceTransformer(self.model_name, device=str(self.device))
+                self.model.max_seq_length = self.max_seq_length
                 self.use_sentence_transformer = True
                 logger.info("使用SentenceTransformer模型 / Using SentenceTransformer model")
             else:
@@ -296,6 +304,14 @@ class EmbeddingRetriever:
             # 编码文本 / Encode texts
             logger.info(f"编码{len(self.texts)}个段落 / Encoding {len(self.texts)} passages")
             self.embeddings = self.encode_texts(self.texts)
+            if (
+                self.embeddings.ndim != 2
+                or self.embeddings.shape[1] != self.embedding_dim
+            ):
+                raise ValueError(
+                    f"Embedding dimension mismatch: expected {self.embedding_dim}, "
+                    f"got {getattr(self.embeddings, 'shape', None)}"
+                )
             
             # 构建FAISS索引 / Build FAISS index
             self._build_faiss_index()
@@ -496,130 +512,201 @@ class EmbeddingRetriever:
         
         return similarity_matrix
     
-    def save_index(self, index_path: Optional[str] = None) -> str:
-        """
-        保存向量索引
-        Save vector index
-        
-        Args:
-            index_path: 索引保存路径 / Index save path
-            
-        Returns:
-            保存路径 / Save path
-        """
+    def save_index(self, index_path: Optional[str] = None,
+                  preprocessed_dataset: Optional[Dict[str, Any]] = None) -> str:
+        """保存向量索引 / Save vector index."""
         if not self.index_built or self.faiss_index is None:
             raise ValueError("没有向量索引可保存 / No vector index to save")
-        
+
         if index_path is None:
             index_dir = self.cache_dir / "embedding_index"
-            ensure_dir(index_dir)
         else:
             index_dir = Path(index_path)
-            ensure_dir(index_dir)
-        
+        ensure_dir(index_dir)
+
         logger.info(f"保存向量索引到: {index_dir} / Saving vector index to: {index_dir}")
-        
+
+        metadata = {
+            "embeddings": self.embeddings,
+            "passage_ids": self.passage_ids,
+            "document_ids": self.document_ids,
+            "passage_metadata": self.passage_metadata,
+            "texts": self.texts,
+            "config": {
+                "model_name": self.model_name,
+                "embedding_dim": self.embedding_dim,
+                "max_seq_length": self.max_seq_length,
+                "index_type": self.index_type,
+                "nlist": self.nlist,
+                "nprobe": self.nprobe,
+            },
+            "statistics": {
+                "total_docs": self.total_docs,
+                "index_built": self.index_built,
+            },
+        }
+
         with Timer("向量索引保存 / Vector index saving"):
-            # 保存FAISS索引 / Save FAISS index
             faiss_path = index_dir / "faiss_index.bin"
-            faiss.write_index(self.faiss_index, str(faiss_path))
-            
-            # 保存元数据 / Save metadata
-            metadata = {
-                'embeddings': self.embeddings,
-                'passage_ids': self.passage_ids,
-                'document_ids': self.document_ids,
-                'passage_metadata': self.passage_metadata,
-                'texts': self.texts,
-                'config': {
-                    'model_name': self.model_name,
-                    'embedding_dim': self.embedding_dim,
-                    'max_seq_length': self.max_seq_length,
-                    'index_type': self.index_type,
-                    'nlist': self.nlist,
-                    'nprobe': self.nprobe
-                },
-                'statistics': {
-                    'total_docs': self.total_docs,
-                    'index_built': self.index_built
-                }
-            }
-            
             metadata_path = index_dir / "metadata.pkl"
-            save_pickle(metadata, metadata_path)
-        
+
+            if preprocessed_dataset is None:
+                # Transitional legacy path used by HybridRetriever until Phase 5.
+                faiss.write_index(self.faiss_index, str(faiss_path))
+                save_pickle(metadata, metadata_path)
+            else:
+                atomic_write_with(
+                    faiss_path,
+                    lambda temporary: faiss.write_index(
+                        self.faiss_index, str(temporary)
+                    ),
+                )
+
+                def _write_metadata(temporary: Path) -> None:
+                    with temporary.open("wb") as handle:
+                        pickle.dump(metadata, handle)
+
+                atomic_write_with(metadata_path, _write_metadata)
+                commit_embedding_manifest(
+                    index_dir=index_dir,
+                    preprocessed_dataset=preprocessed_dataset,
+                    config=self.config,
+                )
+
         logger.info("向量索引保存完成 / Vector index saved successfully")
         return str(index_dir)
-    
-    def load_index(self, index_path: Optional[str] = None) -> None:
-        """
-        加载向量索引
-        Load vector index
-        
-        Args:
-            index_path: 索引文件路径 / Index file path
-        """
+
+    def load_index(self, index_path: Optional[str] = None,
+                  preprocessed_dataset: Optional[Dict[str, Any]] = None) -> None:
+        """加载向量索引 / Load vector index."""
         if index_path is None:
             index_dir = self.cache_dir / "embedding_index"
         else:
             index_dir = Path(index_path)
-        
-        if not index_dir.exists():
-            raise FileNotFoundError(f"向量索引目录不存在: {index_dir} / "
-                                   f"Vector index directory not found: {index_dir}")
-        
+
         logger.info(f"加载向量索引从: {index_dir} / Loading vector index from: {index_dir}")
-        
+
+        faiss_path = index_dir / "faiss_index.bin"
+        metadata_path = index_dir / "metadata.pkl"
+
         with Timer("向量索引加载 / Vector index loading"):
-            # 加载FAISS索引 / Load FAISS index
-            faiss_path = index_dir / "faiss_index.bin"
-            if not faiss_path.exists():
-                raise FileNotFoundError(f"FAISS索引文件不存在: {faiss_path}")
-            
-            self.faiss_index = faiss.read_index(str(faiss_path))
-            
-            # 加载元数据 / Load metadata
-            metadata_path = index_dir / "metadata.pkl"
-            if not metadata_path.exists():
-                raise FileNotFoundError(f"元数据文件不存在: {metadata_path}")
-            
-            metadata = load_pickle(metadata_path)
-            
-            # 恢复数据 / Restore data
-            self.embeddings = metadata['embeddings']
-            self.passage_ids = metadata['passage_ids']
-            self.document_ids = metadata['document_ids']
-            self.passage_metadata = metadata['passage_metadata']
-            self.texts = metadata['texts']
-            
-            # 恢复配置 / Restore configuration
-            config = metadata['config']
-            if config['model_name'] != self.model_name:
-                logger.warning(f"模型名称不匹配: 当前{self.model_name}, 索引{config['model_name']} / "
-                              f"Model name mismatch: current {self.model_name}, index {config['model_name']}")
-            
-            cached_index_type = config.get('index_type', self.index_type)
-            if cached_index_type != self.index_type:
-                logger.warning(
-                    f"索引类型与当前配置不一致，将按缓存实际类型解释分数: "
-                    f"当前{self.index_type}, 缓存{cached_index_type} / "
-                    f"Index type differs from current config; score semantics will "
-                    f"follow cached index: current={self.index_type}, cached={cached_index_type}"
+            validated_cache = preprocessed_dataset is not None
+            if validated_cache:
+                validate_embedding_cache(
+                    index_dir=index_dir,
+                    preprocessed_dataset=preprocessed_dataset,
+                    config=self.config,
                 )
-            self.index_type = cached_index_type
-            
-            # 恢复统计信息 / Restore statistics
-            stats = metadata['statistics']
-            self.total_docs = stats['total_docs']
-            self.index_built = stats['index_built']
-            
-            # 设置搜索参数 / Set search parameters
-            if self.index_type == 'IndexIVFFlat' and hasattr(self.faiss_index, 'nprobe'):
+            else:
+                # Transitional legacy path for HybridRetriever.
+                if not index_dir.exists():
+                    raise FileNotFoundError(
+                        f"向量索引目录不存在: {index_dir} / "
+                        f"Vector index directory not found: {index_dir}"
+                    )
+                if not faiss_path.exists():
+                    raise FileNotFoundError(f"FAISS索引文件不存在: {faiss_path}")
+                if not metadata_path.exists():
+                    raise FileNotFoundError(f"元数据文件不存在: {metadata_path}")
+
+            try:
+                self.faiss_index = faiss.read_index(str(faiss_path))
+                if validated_cache:
+                    with metadata_path.open("rb") as handle:
+                        metadata = pickle.load(handle)
+                else:
+                    metadata = load_pickle(metadata_path)
+            except Exception as error:
+                if validated_cache:
+                    raise CacheCorruptError(
+                        f"Cannot deserialize embedding cache {index_dir}: {error}"
+                    ) from error
+                raise
+
+            self.embeddings = metadata["embeddings"]
+            self.passage_ids = metadata["passage_ids"]
+            self.document_ids = metadata["document_ids"]
+            self.passage_metadata = metadata["passage_metadata"]
+            self.texts = metadata["texts"]
+
+            if not validated_cache:
+                cached_config = metadata["config"]
+                if cached_config["model_name"] != self.model_name:
+                    logger.warning(
+                        f"模型名称不匹配: 当前{self.model_name}, "
+                        f"索引{cached_config['model_name']} / "
+                        f"Model name mismatch: current {self.model_name}, "
+                        f"index {cached_config['model_name']}"
+                    )
+                cached_index_type = cached_config.get("index_type", self.index_type)
+                if cached_index_type != self.index_type:
+                    logger.warning(
+                        f"索引类型与当前配置不一致，将按缓存实际类型解释分数: "
+                        f"当前{self.index_type}, 缓存{cached_index_type} / "
+                        f"Index type differs from current config; score semantics "
+                        f"will follow cached index: current={self.index_type}, "
+                        f"cached={cached_index_type}"
+                    )
+                self.index_type = cached_index_type
+
+            stats = metadata["statistics"]
+            self.total_docs = stats["total_docs"]
+            self.index_built = stats["index_built"]
+
+            self._validate_loaded_index()
+
+            # nprobe is runtime-only and always comes from current config.
+            if self.index_type == "IndexIVFFlat" and hasattr(self.faiss_index, "nprobe"):
                 self.faiss_index.nprobe = self.nprobe
-        
+
         logger.info("向量索引加载完成 / Vector index loaded successfully")
         self._log_index_statistics()
-    
+
+    def _validate_loaded_index(self) -> None:
+        """Validate cross-artifact and cross-field embedding invariants."""
+        if self.faiss_index is None or self.embeddings is None:
+            raise CacheCorruptError("Embedding cache is missing index or embeddings")
+
+        counts = {
+            int(self.faiss_index.ntotal),
+            len(self.embeddings),
+            len(self.passage_ids),
+            len(self.document_ids),
+            len(self.texts),
+            self.total_docs,
+        }
+        if len(counts) != 1:
+            raise CacheCorruptError(
+                "Embedding cache count invariant failed: FAISS ntotal, embeddings, "
+                "passage_ids, document_ids, texts, and total_docs differ"
+            )
+
+        if self.embeddings.ndim != 2:
+            raise CacheCorruptError(
+                f"Embedding matrix must be 2D, got shape {self.embeddings.shape}"
+            )
+        if self.embeddings.shape[1] != self.faiss_index.d:
+            raise CacheCorruptError(
+                f"Embedding dimension {self.embeddings.shape[1]} != "
+                f"FAISS dimension {self.faiss_index.d}"
+            )
+        if self.embeddings.shape[1] != self.embedding_dim:
+            raise CacheCorruptError(
+                f"Embedding dimension {self.embeddings.shape[1]} != "
+                f"configured dimension {self.embedding_dim}"
+            )
+
+        missing_metadata = [
+            passage_id
+            for passage_id in self.passage_ids
+            if passage_id not in self.passage_metadata
+        ]
+        if missing_metadata:
+            raise CacheCorruptError(
+                f"Embedding cache metadata missing passage IDs: "
+                f"{missing_metadata[:5]}"
+            )
+
     def get_passage_by_id(self, passage_id: int) -> Optional[Dict[str, Any]]:
         """
         根据ID获取段落信息
