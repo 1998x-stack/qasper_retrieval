@@ -69,9 +69,16 @@ class QASPERRetrievalSystem:
         self.evaluator = RetrievalEvaluator(self.config)
         
         # 检索器 / Retrievers
+        # Construct heavyweight retrievers once and inject the same instances
+        # into HybridRetriever. Hybrid is a non-owning composition in the
+        # system lifecycle, avoiding duplicate model/index resources.
         self.bm25_retriever = BM25Retriever(self.config)
         self.embedding_retriever = EmbeddingRetriever(self.config)
-        self.hybrid_retriever = HybridRetriever(self.config)
+        self.hybrid_retriever = HybridRetriever(
+            self.config,
+            bm25_retriever=self.bm25_retriever,
+            embedding_retriever=self.embedding_retriever,
+        )
         
         # 数据存储 / Data storage
         self.raw_dataset = None
